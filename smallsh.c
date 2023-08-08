@@ -263,35 +263,34 @@ size_t wordsplit(char const *line) {
 /* Find next instance of a parameter within a word. Sets
  * start and end pointers to the start and end of the parameter
  * token.
+ * Altered to check for end of parameter. 
  */
-char
-param_scan(char const *word, char **start, char **end)
-{
-  static char *prev;
-  if (!word) word = prev;
-  
-  char ret = 0;
-  *start = NULL;
-  *end = NULL;
-  char *s = strchr(word, '$');
-  if (s) {
-    char *c = strchr("$!?", s[1]);
-    if (c) {
-      ret = *c;
-      *start = s;
-      *end = s + 2;
+char param_scan(char const *word, char **start, char **end) {
+    static char *prev;
+    if (!word) word = prev;
+    
+    char ret = 0;
+    *start = NULL;
+    *end = NULL;
+    char *s = strchr(word, '$');
+    
+    if (s) {
+        char *c = strchr("$!?{}", s[1]);
+        if (c) {
+            ret = *c;
+            *start = s;
+            *end = s + 2;
+        } else if (s[1] == '{') {
+            char *e = strchr(s + 2, '{');
+            if (e) {
+                ret = '{';
+                *start = s;
+                *end = e + 1;
+            }
+        }
     }
-    else if (s[1] == '{') {
-      char *e = strchr(s + 2, '}');
-      if (e) {
-        ret = '{';
-        *start = s;
-        *end = e + 1;
-      }
-    }
-  }
-  prev = *end;
-  return ret;
+    prev = *end;
+    return ret;
 }
 
 /* Simple string-builder function. Builds up a base
@@ -329,36 +328,36 @@ build_str(char const *start, char const *end)
 
 /* Expands all instances of $! $$ $? and ${param} in a string 
  * Returns a newly allocated string that the caller must free
- */
+ * Added case for the { character 
+*/
 char *
 expand(char const *word)
 {
-  char const *pos = word;
-  char *start, *end;
-  char c = param_scan(pos, &start, &end);
-  build_str(NULL, NULL);
-  build_str(pos, start);
-  while (c) {
-    if (c == '!'){ 
-        char *bgpid = getenv("SMALLSH_BGPID");
-        if (bgpid) build_str("<BGPID>", NULL);
-        else build_str("", NULL);
-    } else if (c == '$') {
-        char pid_str[20];
-        snprintf(pid_str, sizeof(pid_str), "%d", getpid());
-        build_str(pid_str, NULL);
-    } else if (c == '?') {
-        char *status = getenv("SMALLSH_STATUS");
-        if (status) build_str("<STATUS>", NULL);
-        else build_str("", NULL);
-    } else if (c == '{') {
-      build_str("<Parameter: ", NULL);
-      build_str(start + 2, end - 1);
-      build_str(">", NULL);
+    char *ret = NULL;
+    char *start_param = NULL;
+    char *end_param = NULL;
+    char param_type;
+    
+    while((param_type = param_scan(word, &start_param, &end_param)) ! = 0) {
+        switch (param_type) {
+            case '$': {
+                ret = build_str(ret, getenv(start_param + 1));
+                break;
+            } 
+            case '!': {
+                ret = build_str(ret, start_param + 2);
+                break;
+            }
+            case '{': {
+                ret = build_str(ret, getenv(start_param + 2, end_param));
+                break;
+            }
+        }
+        word = end_param;
     }
-    pos = end;
-    c = param_scan(pos, &start, &end);
-    build_str(pos, start);
-  }
-  return build_str(start, NULL);
+    ret = build_str(ret, word);
+    return ret;
 }
+
+
+        
