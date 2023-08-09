@@ -7,13 +7,11 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <string.h>
-#include <fcntl.h> 
-#include <sys/wait.h> 
-#include <sys/stat.h> 
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <stdint.h>
-
-
 
 #ifndef MAX_WORDS
 #define MAX_WORDS 512
@@ -21,202 +19,268 @@
 
 char *words[MAX_WORDS];
 size_t wordsplit(char const *line);
-char * expand(char const *word);
+char *expand(char const *word);
 
 volatile sig_atomic_t interrupt_flag = 0;
 
-void sigint_handler(int signo){
+void sigint_handler(int signo)
+{
     // Custom behavior for SIGINT (CTRL-C) signal
     interrupt_flag = 1;
 }
 
-void sigtstp_handler(int signo){
-  // Custom behavior for SIGTSTP (CTRL-Z) signal
-  // Do nothing
+void sigtstp_handler(int signo)
+{
+    // Custom behavior for SIGTSTP (CTRL-Z) signal
+    // Do nothing
 }
 
-void print_child_status(pid_t pid, int status){
-    if (WIFEXITED(status)){
+void print_child_status(pid_t pid, int status)
+{
+    if (WIFEXITED(status))
+    {
         fprintf(stderr, "Child process %jd done. Exit status %d\n", (intmax_t)pid, WEXITSTATUS(status));
-    } else if (WIFSIGNALED(status)){
+    }
+    else if (WIFSIGNALED(status))
+    {
         fprintf(stderr, "Child process %jd done. Signaled %d.\n", (intmax_t)pid, WTERMSIG(status));
     }
 }
 
 int main(int argc, char *argv[])
 {
-    signal(SIGINT, sigint_handler);              // signal handlers
+    signal(SIGINT, sigint_handler); // signal handlers
     signal(SIGTSTP, sigtstp_handler);
 
-  FILE *input = stdin;
-  char *input_fn = "(stdin)";
-  if (argc == 2) {
-    input_fn = argv[1];
-    input = fopen(input_fn, "re");
-    if (!input) err(1, "%s", input_fn);
-  } else if (argc > 2) {
-    errx(1, "too many arguments");
-  }
+    FILE *input = stdin;
+    char *input_fn = "(stdin)";
+    if (argc == 2)
+    {
+        input_fn = argv[1];
+        input = fopen(input_fn, "re");
+        if (!input)
+            err(1, "%s", input_fn);
+    }
+    else if (argc > 2)
+    {
+        errx(1, "too many arguments");
+    }
 
-  char *line = NULL;
-  size_t n = 0;
-  int status;
-  int last_exit_status = 0;
+    char *line = NULL;
+    size_t n = 0;
+    int status;
+    int last_exit_status = 0;
 
-  for (;;) {
-//prompt:;
-    /* TODO: Manage background processes */
-    int background = 0;
-    int background_pids[MAX_WORDS];                 // Store the PIDs of background processes
-    int background_count = 0;                               // track number of background processes
+    for (;;)
+    {
+        // prompt:;
+        /* TODO: Manage background processes */
+        int background = 0;
+        int background_pids[MAX_WORDS]; // Store the PIDs of background processes
+        int background_count = 0;       // track number of background processes
 
-    /* Check for terminated background processes */
-    for (int i = 0; i < background_count; ++i){
-        pid_t pid = waitpid(background_pids[i], &status, WNOHANG | WUNTRACED | WCONTINUED);
-        if (pid > 0) {
-            if (WIFEXITED(status) || WIFSIGNALED(status)){
-                print_child_status(pid, status);
-            } else if (WIFSTOPPED(status)){
-                fprintf(stderr, "Child process %jd stopped. Continuing.\n", (intmax_t)pid);
-                kill(pid, SIGCONT);
+        /* Check for terminated background processes */
+        for (int i = 0; i < background_count; ++i)
+        {
+            pid_t pid = waitpid(background_pids[i], &status, WNOHANG | WUNTRACED | WCONTINUED);
+            if (pid > 0)
+            {
+                if (WIFEXITED(status) || WIFSIGNALED(status))
+                {
+                    print_child_status(pid, status);
+                }
+                else if (WIFSTOPPED(status))
+                {
+                    fprintf(stderr, "Child process %jd stopped. Continuing.\n", (intmax_t)pid);
+                    kill(pid, SIGCONT);
+                }
             }
         }
-    }
 
-    /* TODO: prompt */
-    if (input == stdin) {
-        if (interrupt_flag){
-            putchar('\n');
-            interrupt_flag = 0;
-            char *prompt = getenv("PS1");
-            if (prompt == NULL) {
-                prompt = "smallsh> ";                   // default prompt if no PS1
+        /* TODO: prompt */
+        if (input == stdin)
+        {
+            if (interrupt_flag)
+            {
+                putchar('\n');
+                interrupt_flag = 0;
+                char *prompt = getenv("PS1");
+                if (prompt == NULL)
+                {
+                    prompt = "smallsh> "; // default prompt if no PS1
+                }
+                fprintf(stderr, "%s", prompt);
             }
-            fprintf(stderr, "%s", prompt);
         }
-    }
 
-    ssize_t line_len; 
-    do{
-        errno = 0;
-        line_len = getline(&line, &n, input);
-    } while (line_len < 0 && errno == EINTR);
+        ssize_t line_len;
+        do
+        {
+            errno = 0;
+            line_len = getline(&line, &n, input);
+        } while (line_len < 0 && errno == EINTR);
 
-    if (line_len < 0){
-         err(1, "%s", input_fn);
-    }
-    
-    size_t nwords = wordsplit(line);
-    int in_file = STDIN_FILENO;
-    int out_file = STDOUT_FILENO;
-    int append_flag = 0;
+        if (line_len < 0)
+        {
+            err(1, "%s", input_fn);
+        }
 
-    for (size_t i = 0; i < nwords; ++i) {
-        if (strcmp(words[i], "<") == 0){                           // Redirection handler for <
-            if (i + 1 < nwords){
-                in_file = open(words[i + 1], O_RDONLY);
-                if (in_file < 0){
-                    fprintf(stderr, "Error opening file %s: %s\n", words[i + 1], strerror(errno));
-                    continue;
-                }
-                i++;
-            } else {
-                fprintf(stderr, "Missing file name for redirection\n");
-            }
-        } else if (strcmp(words[i], ">") == 0 || strcmp(words[i], ">>") == 0){      // Redirection handler for > and >>
-            if (i + 1 < nwords){
-                int flags = O_WRONLY | O_CREAT;
-                if (strcmp(words[i], ">>") == 0){
-                    flags |= O_APPEND; 
-                    append_flag = 1;
-                } else {
-                    flags |= O_TRUNC;
-                }
-                out_file = open(words[i + 1], flags, S_IRUSR | S_IWUSR | S_IRGRP |S_IROTH);
-                if (out_file < 0) {
-                    fprintf(stderr, "Error opening file %s: %s\n", words[i+ 1], strerror(errno));
-                    continue;
-                }
-                i++;
-            } else {
-                fprintf(stderr, "Missing file name for redirection\n");
-            }
-        } else if (strcmp(words[i], "&") == 0){
-            background = 1;
-        } else if (strcmp(words[i], "exit") == 0){                        // Exit function handler
-            int exit_status = 0;
-            if (i + 1 < nwords) {
-                exit_status = atoi(words[i + 1]);
-                i++;
-            }
-            for (size_t j = 0; j < nwords; j++){
-                free(words[j]);                                         // Clean up for exit
-            }
-            free(line);
-            fclose(input);
-            exit(exit_status);
-        } else if (strcmp(words[i], "cd") == 0) {                       // CD function handler
-            if (i + 1 < nwords){
-                int ret = chdir(words[i + 1]);
-                if (ret != 0){
-                    fprintf(stderr, "cd: %s: %s\n", words[i + 1], strerror(errno));
-                }
-                i++;
-            } else {                                                    // CD function handler for no argument
-                char *home_dir = getenv("HOME");
-                if (home_dir) {
-                    int ret = chdir(home_dir);
-                    if (ret != 0) {
-                        fprintf(stderr, "cd: %s: %s\n", home_dir, strerror(errno));
+        size_t nwords = wordsplit(line);
+        int in_file = STDIN_FILENO;
+        int out_file = STDOUT_FILENO;
+        int append_flag = 0;
+
+        for (size_t i = 0; i < nwords; ++i)
+        {
+            if (strcmp(words[i], "<") == 0)
+            { // Redirection handler for <
+                if (i + 1 < nwords)
+                {
+                    in_file = open(words[i + 1], O_RDONLY);
+                    if (in_file < 0)
+                    {
+                        fprintf(stderr, "Error opening file %s: %s\n", words[i + 1], strerror(errno));
+                        continue;
                     }
-                } else {
-                    fprintf(stderr, "cd: Home environmental variable has not been set.\n");
+                    i++;
+                }
+                else
+                {
+                    fprintf(stderr, "Missing file name for redirection\n");
                 }
             }
-        } else {
-            fprintf(stderr, "Word %zu: %s  -->  ", i, words[i]);
-            char *exp_word = expand(words[i]);
-            free(words[i]);
-            words[i] = exp_word;
-            fprintf(stderr, "%s\n", words[i]);
+            else if (strcmp(words[i], ">") == 0 || strcmp(words[i], ">>") == 0)
+            { // Redirection handler for > and >>
+                if (i + 1 < nwords)
+                {
+                    int flags = O_WRONLY | O_CREAT;
+                    if (strcmp(words[i], ">>") == 0)
+                    {
+                        flags |= O_APPEND;
+                        append_flag = 1;
+                    }
+                    else
+                    {
+                        flags |= O_TRUNC;
+                    }
+                    out_file = open(words[i + 1], flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                    if (out_file < 0)
+                    {
+                        fprintf(stderr, "Error opening file %s: %s\n", words[i + 1], strerror(errno));
+                        continue;
+                    }
+                    i++;
+                }
+                else
+                {
+                    fprintf(stderr, "Missing file name for redirection\n");
+                }
+            }
+            else if (strcmp(words[i], "&") == 0)
+            {
+                background = 1;
+            }
+            else if (strcmp(words[i], "exit") == 0)
+            { // Exit function handler
+                int exit_status = 0;
+                if (i + 1 < nwords)
+                {
+                    exit_status = atoi(words[i + 1]);
+                    i++;
+                }
+                for (size_t j = 0; j < nwords; j++)
+                {
+                    free(words[j]); // Clean up for exit
+                }
+                free(line);
+                fclose(input);
+                exit(exit_status);
+            }
+            else if (strcmp(words[i], "cd") == 0)
+            { // CD function handler
+                if (i + 1 < nwords)
+                {
+                    int ret = chdir(words[i + 1]);
+                    if (ret != 0)
+                    {
+                        fprintf(stderr, "cd: %s: %s\n", words[i + 1], strerror(errno));
+                    }
+                    i++;
+                }
+                else
+                { // CD function handler for no argument
+                    char *home_dir = getenv("HOME");
+                    if (home_dir)
+                    {
+                        int ret = chdir(home_dir);
+                        if (ret != 0)
+                        {
+                            fprintf(stderr, "cd: %s: %s\n", home_dir, strerror(errno));
+                        }
+                    }
+                    else
+                    {
+                        fprintf(stderr, "cd: Home environmental variable has not been set.\n");
+                    }
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Word %zu: %s  -->  ", i, words[i]);
+                char *exp_word = expand(words[i]);
+                free(words[i]);
+                words[i] = exp_word;
+                fprintf(stderr, "%s\n", words[i]);
 
-            // Execute non-builtin commands using the appropriate EXEC(3) function
-            pid_t pid = fork();
-            if (pid == 0){
-                if (in_file != STDIN_FILENO){
-                    dup2(in_file, STDIN_FILENO);
+                // Execute non-builtin commands using the appropriate EXEC(3) function
+                pid_t pid = fork();
+                if (pid == 0)
+                {
+                    if (in_file != STDIN_FILENO)
+                    {
+                        dup2(in_file, STDIN_FILENO);
+                        close(in_file);
+                    }
+                    if (out_file != STDOUT_FILENO)
+                    {
+                        dup2(out_file, STDOUT_FILENO);
+                        fclose(out_file);
+                    }
+                    execvp(words[0], words);
+                    fprintf(stderr, "Error executing command: %s\n", strerror(errno));
+                    exit(1);
+                }
+                else if (pid < 0)
+                {
+                    fprintf(stderr, "Fork Error: %s\n", strerror(errno));
+                }
+                else
+                {
+                    if (background)
+                    {
+                        background_pids[background_count++] = pid;
+                        fprintf(stderr, "Background process %d has started.\n", pid);
+                    }
+                    else
+                    {
+                        waitpid(pid, &status, 0);
+                        last_exit_status = WEXITSTATUS(status); // Get exit status of last command
+                    }
+                }
+
+                if (in_file != STDIN_FILENO)
+                {
                     close(in_file);
+                    in_file = STDIN_FILENO;
                 }
-                if (out_file != STDOUT_FILENO){
-                    dup2(out_file, STDOUT_FILENO);
-                    fclose(out_file);
+                if (out_file != STDOUT_FILENO)
+                {
+                    close(out_file);
+                    out_file = STDOUT_FILENO;
                 }
-                execvp(words[0], words);
-                fprintf(stderr, "Error executing command: %s\n", strerror(errno));
-                exit(1);
-            } else if (pid < 0){
-                fprintf(stderr, "Fork Error: %s\n", strerror(errno));
-            } else {
-                if (background) {
-                    background_pids[background_count++] = pid;
-                    fprintf(stderr, "Background process %d has started.\n", pid);
-                } else {
-                    waitpid(pid, &status, 0);
-                    last_exit_status = WEXITSTATUS(status);             // Get exit status of last command
-                }
-            }
-
-            if (in_file != STDIN_FILENO){
-                close(in_file);
-                in_file = STDIN_FILENO;
-            }
-            if (out_file != STDOUT_FILENO){
-                close(out_file);
-                out_file = STDOUT_FILENO;
             }
         }
     }
-  }
 }
 
 char *words[MAX_WORDS] = {0};
@@ -227,62 +291,79 @@ char *words[MAX_WORDS] = {0};
  * Returns number of words parsed, and updates the words[] array
  * with pointers to the words, each as an allocated string.
  */
-size_t wordsplit(char const *line) {
-  size_t wlen = 0;
-  size_t wind = 0;
+size_t wordsplit(char const *line)
+{
+    size_t wlen = 0;
+    size_t wind = 0;
 
-  char const *c = line;
-  for (;*c && isspace(*c); ++c); /* discard leading space */
+    char const *c = line;
+    for (; *c && isspace(*c); ++c)
+        ; /* discard leading space */
 
-  for (; *c;) {
-    if (wind == MAX_WORDS) break;
-    /* read a word */
-    if (*c == '#') break;
-    for (;*c && !isspace(*c); ++c) {
-      if (*c == '\\') ++c;
-      void *tmp = realloc(words[wind], sizeof **words * (wlen + 2));
-      if (!tmp) err(1, "realloc");
-      words[wind] = tmp;
-      words[wind][wlen++] = *c; 
-      words[wind][wlen] = '\0';
-    }
-    if (wlen > 0) {
-        // Check if word ends with # char 
-        if (words[wind][wlen - 1] == '#'){
-            words[wind][wlen - 1] = '\0';       // Remove # char from word
+    for (; *c;)
+    {
+        if (wind == MAX_WORDS)
+            break;
+        /* read a word */
+        if (*c == '#')
+            break;
+        for (; *c && !isspace(*c); ++c)
+        {
+            if (*c == '\\')
+                ++c;
+            void *tmp = realloc(words[wind], sizeof **words * (wlen + 2));
+            if (!tmp)
+                err(1, "realloc");
+            words[wind] = tmp;
+            words[wind][wlen++] = *c;
+            words[wind][wlen] = '\0';
         }
+        if (wlen > 0)
+        {
+            // Check if word ends with # char
+            if (words[wind][wlen - 1] == '#')
+            {
+                words[wind][wlen - 1] = '\0'; // Remove # char from word
+            }
+        }
+        ++wind;
+        wlen = 0;
+        for (; *c && isspace(*c); ++c)
+            ;
     }
-    ++wind;
-    wlen = 0;
-    for (;*c && isspace(*c); ++c);
-  }
-  return wind;
+    return wind;
 }
-
 
 /* Find next instance of a parameter within a word. Sets
  * start and end pointers to the start and end of the parameter
  * token.
- * Altered to check for end of parameter. 
+ * Altered to check for end of parameter.
  */
-char param_scan(char const *word, char **start, char **end) {
+char param_scan(char const *word, char **start, char **end)
+{
     static char *prev;
-    if (!word) word = prev;
-    
+    if (!word)
+        word = prev;
+
     char ret = 0;
     *start = NULL;
     *end = NULL;
     char *s = strchr(word, '$');
-    
-    if (s) {
+
+    if (s)
+    {
         char *c = strchr("$!?{}", s[1]);
-        if (c) {
+        if (c)
+        {
             ret = *c;
             *start = s;
             *end = s + 2;
-        } else if (s[1] == '{') {
+        }
+        else if (s[1] == '{')
+        {
             char *e = strchr(s + 2, '{');
-            if (e) {
+            if (e)
+            {
                 ret = '{';
                 *start = s;
                 *end = e + 1;
@@ -300,36 +381,38 @@ char param_scan(char const *word, char **start, char **end) {
 char *
 build_str(char const *start, char const *end)
 {
-  static size_t base_len = 0;
-  static char *base = 0;
+    static size_t base_len = 0;
+    static char *base = 0;
 
-  if (!start) {
-    /* Reset; new base string, return old one */
-    char *ret = base;
-    base = NULL;
-    base_len = 0;
-    return ret;
-  }
-  /* Append [start, end) to base string 
-   * If end is NULL, append whole start string to base string.
-   * Returns a newly allocated string that the caller must free.
-   */
-  size_t n = end ? end - start : strlen(start);
-  size_t newsize = sizeof *base *(base_len + n + 1);
-  void *tmp = realloc(base, newsize);
-  if (!tmp) err(1, "realloc");
-  base = tmp;
-  memcpy(base + base_len, start, n);
-  base_len += n;
-  base[base_len] = '\0';
+    if (!start)
+    {
+        /* Reset; new base string, return old one */
+        char *ret = base;
+        base = NULL;
+        base_len = 0;
+        return ret;
+    }
+    /* Append [start, end) to base string
+     * If end is NULL, append whole start string to base string.
+     * Returns a newly allocated string that the caller must free.
+     */
+    size_t n = end ? end - start : strlen(start);
+    size_t newsize = sizeof *base * (base_len + n + 1);
+    void *tmp = realloc(base, newsize);
+    if (!tmp)
+        err(1, "realloc");
+    base = tmp;
+    memcpy(base + base_len, start, n);
+    base_len += n;
+    base[base_len] = '\0';
 
-  return base;
+    return base;
 }
 
-/* Expands all instances of $! $$ $? and ${param} in a string 
+/* Expands all instances of $! $$ $? and ${param} in a string
  * Returns a newly allocated string that the caller must free
- * Added case for the { character 
-*/
+ * Added case for the { character
+ */
 char *
 expand(char const *word)
 {
@@ -337,27 +420,29 @@ expand(char const *word)
     char *start_param = NULL;
     char *end_param = NULL;
     char param_type;
-    
-    while((param_type = param_scan(word, &start_param, &end_param)) ! = 0) {
-        switch (param_type) {
-            case '$': {
-                ret = build_str(ret, getenv(start_param + 1));
-                break;
-            } 
-            case '!': {
-                ret = build_str(ret, start_param + 2);
-                break;
-            }
-            case '{': {
-                ret = build_str(ret, getenv(start_param + 2, end_param));
-                break;
-            }
+
+    while ((param_type = param_scan(word, &start_param, &end_param)) ! = 0)
+    {
+        switch (param_type)
+        {
+        case '$':
+        {
+            ret = build_str(ret, getenv(start_param + 1));
+            break;
+        }
+        case '!':
+        {
+            ret = build_str(ret, start_param + 2);
+            break;
+        }
+        case '{':
+        {
+            ret = build_str(ret, getenv(start_param + 2, end_param));
+            break;
+        }
         }
         word = end_param;
     }
     ret = build_str(ret, word);
     return ret;
 }
-
-
-        
