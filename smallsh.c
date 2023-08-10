@@ -282,7 +282,7 @@ char param_scan(char const *word, char **start, char **end) {
     char ret = 0;
     *start = NULL;
     *end = NULL;
-    for (char *s = word; s; s++) {
+    for (char *s = word; *s; s++) {
         if (*s == '$' && s[1] == '{') {
             ret = '$';
             *start = s;
