@@ -183,12 +183,14 @@ int main(int argc, char *argv[])
 
             // Execute non-builtin commands using the appropriate EXEC(3) function
             pid_t pid = fork();
-            if (pid == 0){
-                if (in_file != STDIN_FILENO){
+            if (pid == 0) {
+                signal(SIGINT, SIG_DFL);     // Reset signal handlers in child
+                signal(SIGTSTP, SIG_DFL);
+                if (in_file != STDIN_FILENO) {
                     dup2(in_file, STDIN_FILENO);
                     close(in_file);
                 }
-                if (out_file != STDOUT_FILENO){
+                if (out_file != STDOUT_FILENO) {
                     dup2(out_file, STDOUT_FILENO);
                     close(out_file);
                 }
@@ -242,7 +244,12 @@ size_t wordsplit(char const *line) {
   for (; *c;) {
     if (wind == MAX_WORDS) break;
     /* read a word */
-    if (*c == '#') break;
+    if (*c == '#') {
+        while (*c && *c != '\n') ++c;
+        if (*c == '\n') ++c;
+        continue;
+    }
+
     for (;*c && !isspace(*c); ++c) {
       if (*c == '\\') ++c;
       void *tmp = realloc(words[wind], sizeof **words * (wlen + 2));
@@ -271,29 +278,25 @@ size_t wordsplit(char const *line) {
  * start and end pointers to the start and end of the parameter
  * token.
  */
-char
-param_scan(char const *word, char **start, char **end)
-{
-  char ret = 0;
-  *start = NULL;
-  *end = NULL;
-  for (char *s = word; s; s++) {
-    if (*s == '$') {
-      if (s[1] == '#') {
-        *start = NULL;
-        *end = NULL;
-        ret = '$';
-        break;
-      } else {
-        ret = '$';
-        *start = s;
-        *end = s + 1;
-        break;
-      }
+char param_scan(char const *word, char **start, char **end) {
+    char ret = 0;
+    *start = NULL;
+    *end = NULL;
+    for (char *s = word; s; s++) {
+        if (*s == '$' && s[1] == '{') {
+            ret = '$';
+            *start = s;
+            s++;
+            while (*s && *s != '}') {
+                ++s;
+            }
+            *end = s + 1;
+            break;
+        }
     }
-  }
-  return ret;
+    return ret;
 }
+
 
 /* Simple string-builder function. Builds up a base
  * string by appending supplied strings/character ranges
@@ -341,27 +344,30 @@ char *expand(char const *word, pid_t *background_pids, int background_count, int
     switch (c) {
         case '$':
             if (start[1] == '$') {
-                // Handle $$ expansion
                 char pid_str[20];
                 snprintf(pid_str, sizeof(pid_str), "%d", getpid());
-                build_str(pid_str, NULL);
-                pos = end;
-            } else if (start[1] == '?') {
+                return build_str(pid_str, NULL);
+            } 
+            break;
+            if (start[1] == '?') {
                 // Handle $? expansion
-                char exit_status_str[20];
-                snprintf(exit_status_str, sizeof(exit_status_str), "%d", last_exit_status);
-                build_str(exit_status_str, NULL);
-                pos = end;
-            } else if (start[1] == '!') {
+                if (start[1] == '?') {
+                    char exit_status_str[20];
+                    snprintf(exit_status_str, sizeof(exit_status_str), "%d", last_exit_status);
+                    return build_str(exit_status_str, NULL);
+                }
+                break;
+            if (start[1] == '!') {
                 // Handle $! expansion
-                if (background_count > 0) {
-                    char bg_pid_str[20];
-                    snprintf(bg_pid_str, sizeof(bg_pid_str), "%d", background_pids[background_count - 1]);
-                    return build_str(bg_pid_str, NULL);
+                if (start[1] == '!') {
+                    if (background_count > 0) {
+                        char bg_pid_str[20];
+                        snprintf(bg_pid_str, sizeof(bg_pid_str), "%d", background_pids[background_count - 1]);
+                        return build_str(bg_pid_str, NULL);
+                    }
+                    pos = end;
                 }
-                pos = end;
-                }
-
+            }
             break;
       case '#':
         while (*pos && *pos != '\n') {
