@@ -19,7 +19,7 @@
 
 char *words[MAX_WORDS];
 size_t wordsplit(char const *line);
-char * expand(char const *word);
+char *expand(char const *word, pid_t *background_pids, int background_count, int last_exit_status);
 
 volatile sig_atomic_t interrupt_flag = 0;
 
@@ -43,6 +43,10 @@ void print_child_status(pid_t pid, int status){
 
 int main(int argc, char *argv[])
 {
+    #define MAX_BACKGROUND_PROCESSES 100
+    pid_t background_pids[MAX_BACKGROUND_PROCESSES];
+    int background_count = 0;
+
     signal(SIGINT, sigint_handler);              // signal handlers
     signal(SIGTSTP, sigtstp_handler);
 
@@ -65,8 +69,6 @@ int main(int argc, char *argv[])
 //prompt:;
     /* TODO: Manage background processes */
     int background = 0;
-    int background_pids[MAX_WORDS];                 // Store the PIDs of background processes
-    int background_count = 0;                               // track number of background processes
 
     /* Check for terminated background processes */
     for (int i = 0; i < background_count; ++i){
@@ -173,7 +175,8 @@ int main(int argc, char *argv[])
             }
         } else {
             fprintf(stderr, "Word %zu: %s  -->  ", i, words[i]);
-            char *exp_word = expand(words[i]);
+            char *exp_word = expand(words[i], background_pids, background_count, last_exit_status);
+
             free(words[i]);
             words[i] = exp_word;
             fprintf(stderr, "%s\n", words[i]);
@@ -196,8 +199,12 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "Fork Error: %s\n", strerror(errno));
             } else {
                 if (background) {
-                    background_pids[background_count++] = pid;
-                    fprintf(stderr, "Background process %d has started.\n", pid);
+                    if (background_count < MAX_BACKGROUND_PROCESSES){
+                        background_pids[background_count++] = pid;
+                        fprintf(stderr, "Background process %d has started.\n", pid);
+                    } else{
+                        fprintf(stderr, "Maximum background process count reached.\n");
+                    }
                 } else {
                     waitpid(pid, &status, 0);
                     last_exit_status = WEXITSTATUS(status);             // Get exit status of last command
@@ -244,11 +251,10 @@ size_t wordsplit(char const *line) {
       words[wind][wlen++] = *c; 
       words[wind][wlen] = '\0';
     }
-    if (wlen > 0) {
-        // Check if word ends with # char 
-        if (words[wind][wlen - 1] == '#'){
-            words[wind][wlen - 1] = '\0';       // Remove # char from word
-        }
+
+    // Check if word ends with # char 
+    if (wlen > 0 && words[wind][wlen - 1] == '#'){
+        words[wind][wlen - 1] = '\0';       // Remove # char from word
     }
     ++wind;
     wlen = 0;
@@ -322,8 +328,7 @@ build_str(char const *start, char const *end)
 /* Expands all instances of $! $$ $? and ${param} in a string 
  * Returns a newly allocated string that the caller must free
  */
-char *
-expand(char const *word)
+char *expand(char const *word, pid_t *background_pids, int background_count, int last_exit_status)
 {
   char const *pos = word;
   char *start, *end;
@@ -332,12 +337,33 @@ expand(char const *word)
   build_str(pos, start);
   while (c) {
     switch (c) {
-      case '$':
-        char pid_str[20];
-        snprintf(pid_str, sizeof(pid_str), "%d", getpid());
-        build_str(pid_str, NULL);
-        break;
+        case '$':
+            if (start[1] == '$') {
+                // Handle $$ expansion
+                char pid_str[20];
+                snprintf(pid_str, sizeof(pid_str), "%d", getpid());
+                build_str(pid_str, NULL);
+                pos = end;
+            } else if (start[1] == '?') {
+                // Handle $? expansion
+                char exit_status_str[20];
+                snprintf(exit_status_str, sizeof(exit_status_str), "%d", last_exit_status);
+                build_str(exit_status_str, NULL);
+                pos = end;
+            } else if (start[1] == '!') {
+                // Handle $! expansion
+                if (background_count > 0) {
+                    char bg_pid_str[20];
+                    snprintf(bg_pid_str, sizeof(bg_pid_str), "%d", background_pids[background_count - 1]);
+                    build_str(bg_pid_str, NULL);
+                }
+                pos = end;
+            }
+            break;
       case '#':
+        while (*pos && *pos != '\n') {
+            pos++;
+        }
         break;
       default:
         break;
