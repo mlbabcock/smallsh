@@ -190,7 +190,7 @@ int main(int argc, char *argv[])
                 }
                 if (out_file != STDOUT_FILENO){
                     dup2(out_file, STDOUT_FILENO);
-                    fclose(out_file);
+                    close(out_file);
                 }
                 execvp(words[0], words);
                 fprintf(stderr, "Error executing command: %s\n", strerror(errno));
@@ -254,9 +254,12 @@ size_t wordsplit(char const *line) {
 
     // Check if word ends with # char 
     if (wlen > 0 && words[wind][wlen - 1] == '#'){
-        words[wind][wlen - 1] = '\0';       // Remove # char from word
+        words[wind][wlen - 1] = '\0';                           // Remove # char from word
     }
     ++wind;
+    if (wlen > 0 && words[wind][wlen - 1] == '\\'){
+        words[wind][wlen - 1] = ' ';                            // Remove the escape backslash
+    }
     wlen = 0;
     for (;*c && isspace(*c); ++c);
   }
@@ -333,7 +336,6 @@ char *expand(char const *word, pid_t *background_pids, int background_count, int
   char const *pos = word;
   char *start, *end;
   char c = param_scan(pos, &start, &end);
-  build_str(NULL, NULL);
   build_str(pos, start);
   while (c) {
     switch (c) {
@@ -355,10 +357,11 @@ char *expand(char const *word, pid_t *background_pids, int background_count, int
                 if (background_count > 0) {
                     char bg_pid_str[20];
                     snprintf(bg_pid_str, sizeof(bg_pid_str), "%d", background_pids[background_count - 1]);
-                    build_str(bg_pid_str, NULL);
+                    return build_str(bg_pid_str, NULL);
                 }
                 pos = end;
-            }
+                }
+
             break;
       case '#':
         while (*pos && *pos != '\n') {
