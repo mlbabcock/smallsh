@@ -151,6 +151,7 @@ int main(int argc, char *argv[])
             }
             for (size_t j = 0; j < nwords; j++){
                 free(words[j]);                                         // Clean up for exit
+                words[j] = NULL;
             }
             free(line);
             fclose(input);
@@ -181,11 +182,12 @@ int main(int argc, char *argv[])
             words[i] = exp_word;
             fprintf(stderr, "%s\n", words[i]);
 
+
             // Execute non-builtin commands using the appropriate EXEC(3) function
             pid_t pid = fork();
             if (pid == 0) {
-                signal(SIGINT, SIG_DFL);     // Reset signal handlers in child
-                signal(SIGTSTP, SIG_DFL);
+                signal(SIGINT, SIG_IGN);     // Reset signal handlers in child
+                signal(SIGTSTP, SIG_IGN);
                 if (in_file != STDIN_FILENO) {
                     dup2(in_file, STDIN_FILENO);
                     close(in_file);
@@ -208,8 +210,10 @@ int main(int argc, char *argv[])
                         fprintf(stderr, "Maximum background process count reached.\n");
                     }
                 } else {
-                    waitpid(pid, &status, 0);
-                    last_exit_status = WEXITSTATUS(status);             // Get exit status of last command
+                    if (!background) {
+                        waitpid(pid, &status, 0);
+                        last_exit_status = WEXITSTATUS(status);             // Get exit status of last command
+                    }
                 }
             }
 
@@ -223,6 +227,11 @@ int main(int argc, char *argv[])
             }
         }
     }
+    // Free allocated memory for words outside the loop
+    for (size_t j = 0; j < nwords; j++) {
+        free(words[j]);
+        words[j] = NULL; // Set to NULL after freeing
+    }
   }
 }
 
@@ -235,42 +244,47 @@ char *words[MAX_WORDS] = {0};
  * with pointers to the words, each as an allocated string.
  */
 size_t wordsplit(char const *line) {
-  size_t wlen = 0;
-  size_t wind = 0;
+    size_t wlen = 0;
+    size_t wind = 0;
 
-  char const *c = line;
-  for (;*c && isspace(*c); ++c); /* discard leading space */
+    char const *c = line;
+    for (; *c && isspace(*c); ++c); /* discard leading space */
 
-  for (; *c;) {
-    if (wind == MAX_WORDS) break;
-    /* read a word */
-    if (*c == '#') {
-        while (*c && *c != '\n') ++c;
-        if (*c == '\n') ++c;
-        continue;
-    }
+    for (; *c;) {
+        if (wind == MAX_WORDS) break;
+        /* read a word */
+        if (*c == '#') {
+            while (*c && *c != '\n') ++c;
+            if (*c == '\n') ++c;
+            continue;
+        }
 
-    for (;*c && !isspace(*c); ++c) {
-      if (*c == '\\') ++c;
-      void *tmp = realloc(words[wind], sizeof **words * (wlen + 2));
-      if (!tmp) err(1, "realloc");
-      words[wind] = tmp;
-      words[wind][wlen++] = *c; 
-      words[wind][wlen] = '\0';
-    }
+        for (;*c && !isspace(*c); ++c) {
+            if (*c == '\\') ++c;
+            void *tmp = realloc(words[wind], sizeof **words * (wlen + 2));
+            if (!tmp) {
+                perror("realloc");
+                // Proper error handling here, like freeing allocated memory and returning.
+                // For simplicity, we'll just exit.
+                exit(1);
+            }
+            words[wind] = tmp;
+            words[wind][wlen++] = *c; 
+            words[wind][wlen] = '\0';
+        }
 
-    // Check if word ends with # char 
-    if (wlen > 0 && words[wind][wlen - 1] == '#'){
-        words[wind][wlen - 1] = '\0';                           // Remove # char from word
+        // Check if word ends with # char 
+        if (wlen > 0 && words[wind][wlen - 1] == '#'){
+            words[wind][wlen - 1] = '\0';                           // Remove # char from word
+        }
+        ++wind;
+        if (wlen > 0 && words[wind][wlen - 1] == '\\'){
+            words[wind][wlen - 1] = ' ';                            // Remove the escape backslash
+        }
+        wlen = 0;
+        for (;*c && isspace(*c); ++c);
     }
-    ++wind;
-    if (wlen > 0 && words[wind][wlen - 1] == '\\'){
-        words[wind][wlen - 1] = ' ';                            // Remove the escape backslash
-    }
-    wlen = 0;
-    for (;*c && isspace(*c); ++c);
-  }
-  return wind;
+    return wind;
 }
 
 
@@ -302,85 +316,76 @@ char param_scan(char const *word, char **start, char **end) {
  * string by appending supplied strings/character ranges
  * to it.
  */
-char *
-build_str(char const *start, char const *end)
-{
-  static size_t base_len = 0;
-  static char *base = 0;
+char *build_str(char const *start, char const *end) {
+    static size_t base_len = 0;
+    static char *base = 0;
 
-  if (!start) {
-    /* Reset; new base string, return old one */
-    char *ret = base;
-    base = NULL;
-    base_len = 0;
-    return ret;
-  }
-  /* Append [start, end) to base string 
-   * If end is NULL, append whole start string to base string.
-   * Returns a newly allocated string that the caller must free.
-   */
-  size_t n = end ? end - start : strlen(start);
-  size_t newsize = sizeof *base *(base_len + n + 1);
-  void *tmp = realloc(base, newsize);
-  if (!tmp) err(1, "realloc");
-  base = tmp;
-  memcpy(base + base_len, start, n);
-  base_len += n;
-  base[base_len] = '\0';
+    if (!start) {
+        /* Reset; new base string, return old one */
+        char *ret = base;
+        base = NULL;
+        base_len = 0;
+        return ret;
+    }
+    /* Append [start, end) to base string 
+     * If end is NULL, append the whole start string to the base string.
+     * Returns a newly allocated string that the caller must free.
+     */
+    size_t n = end ? end - start : strlen(start);
+    size_t newsize = sizeof *base *(base_len + n + 1);
+    void *tmp = realloc(base, newsize);
+    if (!tmp) {
+        perror("realloc");
+        // Proper error handling here, like freeing allocated memory and returning.
+        // For simplicity, we'll just exit.
+        exit(1);
+    }
+    base = tmp;
+    memcpy(base + base_len, start, n);
+    base_len += n;
+    base[base_len] = '\0';
 
-  return base;
+    return base;
 }
 
 /* Expands all instances of $! $$ $? and ${param} in a string 
  * Returns a newly allocated string that the caller must free
  */
-char *expand(char const *word, pid_t *background_pids, int background_count, int last_exit_status)
-{
-  char const *pos = word;
-  char *start, *end;
-  char c = param_scan(pos, &start, &end);
-  build_str(pos, start);
-  while (c) {
-    switch (c) {
-        case '$':
-            if (start[1] == '$') {
-                char pid_str[20];
-                snprintf(pid_str, sizeof(pid_str), "%d", getpid());
-                return build_str(pid_str, NULL);
-            } 
-            break;
-            if (start[1] == '?') {
-                // Handle $? expansion
-                if (start[1] == '?') {
+char *expand(char const *word, pid_t *background_pids, int background_count, int last_exit_status) {
+    char const *pos = word;
+    char *start, *end;
+    char c = param_scan(pos, &start, &end);
+    build_str(pos, start);
+    while (c) {
+        switch (c) {
+            case '$':
+                if (start[1] == '$') {
+                    char pid_str[20];
+                    snprintf(pid_str, sizeof(pid_str), "%d", getpid());
+                    return build_str(pid_str, end);
+                } else if (start[1] == '?') {
                     char exit_status_str[20];
                     snprintf(exit_status_str, sizeof(exit_status_str), "%d", last_exit_status);
-                    return build_str(exit_status_str, NULL);
-                }
-                break;
-            }
-            if (start[1] == '!') {
-                // Handle $! expansion
-                if (start[1] == '!') {
+                    return build_str(exit_status_str, end);
+                } else if (start[1] == '!') {
                     if (background_count > 0) {
                         char bg_pid_str[20];
                         snprintf(bg_pid_str, sizeof(bg_pid_str), "%d", background_pids[background_count - 1]);
-                        return build_str(bg_pid_str, NULL);
+                        return build_str(bg_pid_str, end);
                     }
-                    pos = end;
                 }
-            }
-            break;
-        case '#':
-            while (*pos && *pos != '\n') {
-                pos++;
-            }
-            break;
-        default:
-            break;
+                break;
+            case '#':
+                while (*pos && *pos != '\n') {
+                    pos++;
+                }
+                break;
+            default:
+                break;
         }
-    pos = end;
-    c = param_scan(pos, &start, &end);
-    build_str(pos, start);
-  }
-  return build_str(start, NULL);
+        pos = end;
+        c = param_scan(pos, &start, &end);
+        build_str(pos, start);
+    }
+    return build_str(start, NULL);
 }
