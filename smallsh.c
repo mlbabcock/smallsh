@@ -25,6 +25,20 @@ size_t wordsplit(char const *line);
 char * expand(char const *word);
 char pid_str[16];
 
+pid_t last_bg_pid = -1;                                 // Initialize with an invalid value
+pid_t get_last_bg_pid() {
+    return last_bg_pid;
+}
+
+int last_exit_status = 0;                               // Initialize with a default value
+int get_last_exit_status() {
+    return last_exit_status;
+}
+
+void set_last_exit_status(int status) {
+    last_exit_status = status;
+}
+
 void sigint_handler(int sig) {
     // do nothing 
 }
