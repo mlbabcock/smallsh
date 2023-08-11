@@ -357,6 +357,7 @@ char *expand(char const *word, pid_t *background_pids, int background_count, int
                     return build_str(exit_status_str, NULL);
                 }
                 break;
+            }
             if (start[1] == '!') {
                 // Handle $! expansion
                 if (start[1] == '!') {
@@ -369,14 +370,14 @@ char *expand(char const *word, pid_t *background_pids, int background_count, int
                 }
             }
             break;
-      case '#':
-        while (*pos && *pos != '\n') {
-            pos++;
+        case '#':
+            while (*pos && *pos != '\n') {
+                pos++;
+            }
+            break;
+        default:
+            break;
         }
-        break;
-      default:
-        break;
-    }
     pos = end;
     c = param_scan(pos, &start, &end);
     build_str(pos, start);
