@@ -38,13 +38,14 @@ void handle_signal(int signal) {
 int main() {
   char line[1024];
   int status;
+  char **args;
 
   while (1) {
     printf("$ ");
     fgets(line, sizeof(line), stdin);
 
     // Parse the line
-    char **args = parse_line(line);
+    args = parse_line(line);
 
     // Execute the command
     int ret = execute_command(args, &status);
@@ -55,6 +56,8 @@ int main() {
     } else if (status != 0) {
       printf("Exited with status %d\n", status);
     }
+
+    free(args);
   }
 
   return 0;
@@ -87,6 +90,7 @@ int execute_command(char **args, int *status) {
     exit(1);
   } else {
     // Parent process
+    int i = 0;
     if (args[i] != NULL && args[i][0] != '&') {
       waitpid(pid, status, 0);
     }
