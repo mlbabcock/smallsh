@@ -1,283 +1,201 @@
-#define _POSIX_C_SOURCE 200809L
-#define _GNU_SOURCE
-#include <stdlib.h>
 #include <stdio.h>
-#include <err.h>
-#include <errno.h>
-#include <unistd.h>
-#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
-#include <fcntl.h> 
-#include <sys/wait.h> 
-#include <sys/stat.h> 
+#include <unistd.h>
+#include <signal.h>
 #include <sys/types.h>
-#include <stdint.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
+#define MAX_WORDS 512
 
-// Global variables
-char *prompt = "$ ";
+// Global Variables
+int backgroundFlag = 0;
+int childStatus = 0; 
+int backgroundChild = 0;
+char *words[MAX_WORDS]; 
 
+// Function for checking termination of background processes
+void backgroundCheck() {
+    pid_t childPid;
+    int childStatus;
 
-// Function prototypes
-int parse_line(char *line);
-int execute_command(char **args, int *status);
-void handle_signal(int signal);
-
-// Signal handling
-void handle_signal(int signal) {
-  if (signal == SIGINT) {
-    // Ignore this signal
-    return;
-  }
-
-  // If any other signal is received, print a message and continue
-  fprintf(stderr, "Ignoring signal %d\n", signal);
-}
-
-// Main
-int main() {
-  char line[1024];
-  int status;
-  char **args;
-
-  while (1) {
-    printf("$ ");
-    fgets(line, sizeof(line), stdin);
-
-    // Parse the line
-    args = parse_line(line);
-
-    // Execute the command
-    int ret = execute_command(args, &status);
-
-    // Handle the exit status
-    if (ret == -1) {
-      perror("Failed to execute command");
-    } else if (status != 0) {
-      printf("Exited with status %d\n", status);
-    }
-
-    free(args);
-  }
-
-  return 0;
-}
-
-int parse_line(char *line) {
-  char *token;
-  char **args = malloc(sizeof(char *) * 10);
-  int i = 0;
-
-  token = strtok(line, " ");
-  while (token != NULL) {
-    args[i] = token;
-    i++;
-    token = strtok(NULL, " ");
-  }
-
-  args[i] = NULL;
-
-  return i;
-}
-
-int execute_command(char **args, int *status) {
-  int pid = fork();
-  if (pid == -1) {
-    return -1;
-  } else if (pid == 0) {
-    // Child process
-    execvp(args[0], args);
-    exit(1);
-  } else {
-    // Parent process
-    int i = 0;
-    if (args[i] != NULL && args[i][0] != '&') {
-      waitpid(pid, status, 0);
-    }
-  }
-
-  return 0;
-}
-
-void print_prompt() {
-  printf("%s", prompt);
-}
-
-char **parse_line(char *line) {
-  char **args = malloc(sizeof(char *) * 10);
-  int i = 0;
-
-  for (char *token = strtok(line, " "); token != NULL; token = strtok(NULL, " ")) {
-    args[i++] = token;
-  }
-
-  args[i] = NULL;
-  return args;
-}
-
-// Word splitting
-char **parse_line(char *line) {
-  char **args = malloc(sizeof(char *) * 512);
-  int i = 0;
-
-  for (char *token = strtok(line, " "); token != NULL; token = strtok(NULL, " ")) {
-    // Handle backslashes
-    while (strchr(token, '\\') != NULL) {
-      int j = 0;
-      char *new_token = malloc(sizeof(char) * strlen(token) + 1);
-      for (int i = 0; i < strlen(token); i++) {
-        if (token[i] == '\\') {
-          i++;
+    while ((childPid = waitpid(-1, &childStatus, WNOHANG)) > 0) {
+        if (WIFEXITED(childStatus)) {
+            printf("Background process %d terminated. Exit status: %d\n", (int)childPid, WEXITSTATUS(childStatus));
+        } else if (WIFSIGNALED(childStatus)) {
+            printf("Background process %d terminated by signal: %d\n", (int)childPid, WTERMSIG(childStatus));
         }
-        new_token[j++] = token[i];
-      }
-      token = new_token;
     }
-
-    // Handle comments
-    if (token[0] == '#') {
-      break;
-    }
-    args[i++] = token;
-  }
-  args[i] = NULL;
-  return args;
 }
 
-// Expansion
-void expand_parameters(char **args) {
-  for (int i = 0; args[i] != NULL; i++) {
-    if (args[i][0] == '$') {
-      // Check for special parameters
-      if (args[i][1] == '?') {
-        // $? expands to the exit status of the last foreground command
-        args[i] = itoa(get_exit_status());
-      } else if (args[i][1] == '!') {
-        // $! expands to the pid of the most recent background process
-        args[i] = itoa(get_pid_of_last_background_process());
-      } else if (args[i][1] == '$') {
-        // $$ expands to the pid of the current shell process
-        args[i] = itoa(getpid());
-      } else {
-        // Otherwise, expand the parameter as a variable
-        args[i] = getenv(args[i] + 2);
-        if (args[i] == NULL) {
-          args[i] = "";
+int main(int argc, char *argv[]) {
+    struct sigaction SIGINT_default = {0};
+    struct sigaction SIGTSTP_default = {0};
+    struct sigaction SIGINT_action = {0};
+    struct sigaction SIGTSTP_action = {0};
+    
+    SIGINT_action.sa_handler = SIG_IGN; 
+    SIGTSTP_action.sa_handler = SIG_IGN; 
+    
+    sigaction(SIGINT, &SIGINT_action, &SIGINT_default); 
+    sigaction(SIGTSTP, &SIGTSTP_action, &SIGTSTP_default); 
+
+    // Infinite loop for the shell
+    while (1) {
+        backgroundFlag = 0;
+        backgroundChild = 0;
+
+        // Manage background processes
+        backgroundCheck();
+
+        // Display prompt and read input
+        const char *PS1 = getenv("PS1");
+        if (PS1 == NULL) {
+            PS1 = ""; 
         }
-      }
-    }
-  }
-}
+        printf("%s", PS1);
 
-// Waiting
-void handle_signal(int signal) {
-  // Handle SIGINT (Ctrl-C)
-  if (signal == SIGINT) {
-    printf("\n");
-  }
-}
-
-// Parsing
-int parse_line(char *line) {
-  char **args = malloc(sizeof(char *) * 512);
-  int i = 0;
-
-  // Split the line into words
-  for (char *token = strtok(line, " "); token != NULL; token = strtok(NULL, " ")) {
-    // Handle backslashes
-    while (strchr(token, '\\') != NULL) {
-      int j = 0;
-      char *new_token = malloc(sizeof(char) * strlen(token) + 1);
-      for (int i = 0; i < strlen(token); i++) {
-        if (token[i] == '\\') {
-          i++;
-        }
-        new_token[j++] = token[i];
-      }
-      token = new_token;
-    }
-    // Handle comments
-    if (token[0] == '#') {
-      break;
-    }
-    args[i++] = token;
-  }
-  args[i] = NULL;
-  return i;
-}
-
-// Input and Output redirection
-int execute_command(char **args, int *status) {
-  int i = 0;
-
-  // Fork a child process
-  pid_t pid = fork();
-  if (pid == -1) {
-    // Error forking
-    fprintf(stderr, "Failed to fork\n");
-    return 1;
-  }
-
-  if (pid == 0) {
-    // Child process
-    // Reset all signals to their original dispositions
-    sigset_t set;
-    sigfillset(&set);
-    sigprocmask(SIG_SETMASK, &set, NULL);
-
-    // Handle redirection
-    for (i = 0; args[i] != NULL; i++) {
-      if (args[i][0] == '<') {
-        // Input redirection
-        int fd = open(args[i + 1], O_RDONLY);
-        if (fd == -1) {
-          perror("Failed to open input file");
-          exit(1);
+        // Read input line
+        char *line = NULL;
+        size_t lineSize = 0;
+        ssize_t lineLength = getline(&line, &lineSize, stdin);
+        if (lineLength < 0) {
+            if (feof(stdin) != 0) {
+                printf("\n"); 
+                break; 
+            }
+            perror("Error reading input");
+            exit(EXIT_FAILURE);
         }
 
-        // Redirect stdin
-        dup2(fd, 0);
-        close(fd);
+        // Split input line into words
+        size_t numWords = wordsplit(line, words);
 
-        // Remove the redirection operator from the arguments
-        args[i] = args[i + 1];
-        args[i + 1] = NULL;
-      } else if (args[i][0] == '>') {
-        // Output redirection
-        int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0777);
-        if (fd == -1) {
-          perror("Failed to open output file");
-          exit(1);
+        // Expand parameters in words
+        for (size_t i = 0; i < numWords; ++i) {
+            char *expandedWord = expand(words[i]);
+            free(words[i]);
+            words[i] = expandedWord;
         }
 
-        // Redirect stdout
-        dup2(fd, 1);
-        close(fd);
+        // Execute built-in commands or fork and execute external commands
+                for (size_t i = 0; i < numWords; ++i) {
+            char *expandedWord = expand(words[i]);
+            free(words[i]);
+            words[i] = expandedWord;
+        }
 
-        // Remove the redirection operator from the arguments
-        args[i] = args[i + 1];
-        args[i + 1] = NULL;
-      }
-    }
+        // Execute built-in commands or fork and execute external commands
+        if (numWords > 0 && strcmp(words[0], "exit") == 0) {
+            // ... (exit handling)
+        } else if (numWords > 0 && strcmp(words[0], "cd") == 0) {
+            // ... (cd handling)
+        } else {
+            // Fork and execute external command
+            pid_t childPid = fork();
+            if (childPid == -1) {
+                perror("fork() error");
+                exit(EXIT_FAILURE);
+            } else if (childPid == 0) {
+                // ... (child process handling)
+            } else {
+                // Parent process
+                if (!backgroundFlag) {
+                    int status;
+                    waitpid(childPid, &status, 0); // Wait for the child process to finish
 
-    // Execute the command
-    if (execvp(args[0], args) == -1) {
-      // Command not found
-      perror("Failed to execute command");
-      exit(1);
-    }
-  } else {
-    // Parent process
-    // If the command is not in the background, wait for it to finish
-    if (args[i] != NULL && args[i][0] != '&') {
-      waitpid(pid, status, 0);
-      set_exit_status(*status);
-    } else {
-      // The command is in the background
-      // Set the $! variable
-      set_pid_of_last_background_process(pid);
-    }
-  }
+                    if (WIFSIGNALED(status)) {
+                        printf("Foreground process exited with signal %d\n", WTERMSIG(status));
+                    } else if (WIFEXITED(status)) {
+                        printf("Foreground process exited with status %d\n", WEXITSTATUS(status));
+                    }
+                } else {
+                    printf("Background process started with PID %d\n", childPid);
+                }
+            }
+        }
 
-  return *status;
+        // Handle background process execution
+        while ((backgroundChild = waitpid(-1, &childStatus, WNOHANG)) > 0) {
+            if (WIFEXITED(childStatus)) {
+                printf("Background process %d exited with status %d\n", backgroundChild, WEXITSTATUS(childStatus));
+            } else if (WIFSIGNALED(childStatus)) {
+                printf("Background process %d exited due to signal %d\n", backgroundChild, WTERMSIG(childStatus));
+            }
+        }
+        free(line);
+    }
+    return 0;
+}
+
+size_t wordsplit(char const *line, char *words[]) {
+    size_t wordCount = 0;
+    const char *delimiters = " \t\n";                       
+    char *lineCopy = strdup(line);                          
+    char *token = strtok(lineCopy, delimiters);
+
+    while (token != NULL && wordCount < MAX_WORDS) {
+        words[wordCount] = strdup(token);
+        token = strtok(NULL, delimiters);
+        wordCount++;
+    }
+    free(lineCopy);                                         
+    return wordCount;
+}
+
+char *expand(char const *word) {
+    const char *paramChars = "$"; 
+    char *expandedWord = malloc(strlen(word) + 1); 
+    char *destination = expandedWord;
+
+    while (*word != '\0') {
+        if (*word == '$') {
+            word++;
+            if (*word == '\0') {
+                *destination = '$';
+                destination++;
+                break;
+            } else if (*word == '$') {
+                *destination = '$';
+                destination++;
+            } else if (*word == '{') {
+                word++;
+                char *paramEnd = strchr(word, '}');
+                if (paramEnd != NULL) {
+                    char paramName[paramEnd - word + 1];
+                    strncpy(paramName, word, paramEnd - word);
+                    paramName[paramEnd - word] = '\0';
+                    word = paramEnd + 1;
+                    continue;
+                }
+            } else {
+                if (*word == '!') {
+                    pid_t backgroundPid = getpid(); 
+                    destination += sprintf(destination, "%d", (int)backgroundPid);
+                    word++;
+                } else if (*word == '$') {
+                    pid_t shellPid = getpid(); 
+                    destination += sprintf(destination, "%d", (int)shellPid);
+                    word++;
+                } else if (*word == '?') {
+                    int exitStatus = 0; 
+                    destination += sprintf(destination, "%d", exitStatus);
+                    word++;
+                } else {
+                    *destination = '$';
+                    destination++;
+                    *destination = *word;
+                    destination++;
+                    word++;
+                }
+            }
+        } else {
+            *destination = *word;
+            destination++;
+        }
+        word++;
+    }
+    *destination = '\0'; 
+    return expandedWord;
 }
